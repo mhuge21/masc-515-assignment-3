@@ -93,7 +93,7 @@ block_size = 16 # maximum context length of the attention window (note: the long
 n_head = 4      # number of attention heads
 head_dim = n_embd // n_head # derived dimension of each head
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
-state_dict = {'wte': matrix(vocab_size, n_embd), 'wpe': matrix(block_size, n_embd), 'lm_head': matrix(vocab_size, n_embd)}
+state_dict = {'wte': matrix(vocab_size, n_embd), 'lm_head': matrix(vocab_size, n_embd)}
 r = 2  # LoRA rank
 for i in range(n_layer):
     state_dict[f'layer{i}.attn_wq'] = matrix(n_embd, n_embd)
@@ -144,11 +144,31 @@ def rmsnorm(x):
     scale = (ms + 1e-5) ** -0.5
     return [xi * scale for xi in x]
 
+
+def apply_rope(vec, pos):
+    """
+    Applies Rotary Position Embedding (RoPE) to a vector.
+    Rotates adjacent pairs of dimensions based on their position index.
+    """
+    d = len(vec)
+    out = []
+    for i in range(0, d, 2):
+        # Calculate rotation angle for this pair of dimensions
+        theta = 10000.0 ** (-i / d)
+        m_theta = pos * theta
+        cos_val = math.cos(m_theta)
+        sin_val = math.sin(m_theta)
+
+        # Apply 2D rotation to the pair (vec[i], vec[i+1])
+        v0 = vec[i]
+        v1 = vec[i + 1]
+        out.append(v0 * cos_val - v1 * sin_val)
+        out.append(v1 * cos_val + v0 * sin_val)
+    return out
+
 def gpt(token_id, pos_id, keys, values):
-    tok_emb = state_dict['wte'][token_id] # token embedding
-    pos_emb = state_dict['wpe'][pos_id] # position embedding
-    x = [t + p for t, p in zip(tok_emb, pos_emb)] # joint token and position embedding
-    x = rmsnorm(x) # note: not redundant due to backward pass via the residual connection
+    x = state_dict['wte'][token_id]  # Just use token embedding (RoPE handles position later)
+    x = rmsnorm(x)
 
     for li in range(n_layer):
         # 1) Multi-head Attention block
@@ -171,9 +191,14 @@ def gpt(token_id, pos_id, keys, values):
         x_attn = []
         for h in range(n_head):
             hs = h * head_dim
-            q_h = q[hs:hs+head_dim]
-            k_h = [ki[hs:hs+head_dim] for ki in keys[li]]
-            v_h = [vi[hs:hs+head_dim] for vi in values[li]]
+
+            # Extract query and apply RoPE for current position
+            q_h = apply_rope(q[hs:hs + head_dim], pos_id)
+
+            # Extract keys and apply RoPE using their historical positions (t)
+            k_h = [apply_rope(ki[hs:hs + head_dim], t) for t, ki in enumerate(keys[li])]
+
+            v_h = [vi[hs:hs + head_dim] for vi in values[li]]
             attn_logits = [sum(q_h[j] * k_h[t][j] for j in range(head_dim)) / head_dim**0.5 for t in range(len(k_h))]
             attn_weights = softmax(attn_logits)
             head_out = [sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))) for j in range(head_dim)]

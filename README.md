@@ -42,3 +42,15 @@ $$h = W_0 x + \Delta W x = W_0 x + B A x$$
 
 In our pure Python `microgpt.py` implementation, we added matrices $A$ and $B$ (with $r=2$) to the `state_dict` for the Query and Value attention layers. We implemented a custom `lora_linear` function that computes both paths using our Autograd `Value` objects, dramatically reducing the number of trainable parameters needed to adapt those layers.
 
+### 3. Rotary Position Embedding (RoPE)
+**Reference:** [https://arxiv.org/abs/2104.09864](https://arxiv.org/abs/2104.09864)
+
+**Underlying Idea:**
+Traditional Transformers rely on absolute position embeddings added to token embeddings at the base of the network. Rotary Position Embedding (RoPE) proposes a different approach: injecting positional information directly into the attention mechanism by encoding absolute positions with a rotation matrix, which naturally yields relative position dependency.
+
+Instead of adding vectors, RoPE rotates the query $q$ and key $k$ representations in 2D pairs. For a specific position $m$, it applies a rotation matrix $R_{\Theta, m}$. The core mathematical insight is that the dot product of a query at position $m$ and a key at position $n$ becomes a function purely of their relative distance $m - n$:
+
+$$\langle R_{\Theta, m} q, R_{\Theta, n} k \rangle = q^T R_{\Theta, m}^T R_{\Theta, n} k = q^T R_{\Theta, m-n} k$$
+
+This provides a mathematically elegant way to give the model relative positional awareness without needing complex relative distance tables. In our `microgpt.py` pure Python implementation, we entirely removed the absolute positional embeddings (`wpe`) and created an `apply_rope` function that rotates the $q$ and $k$ vectors head-by-head using $\cos(m\theta)$ and $\sin(m\theta)$ before the attention dot-product is calculated.
+
