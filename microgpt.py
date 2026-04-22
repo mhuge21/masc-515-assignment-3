@@ -109,8 +109,13 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wv_b'] = matrix(n_embd, r, std=0.0)  # B is initialized to 0
 
     state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
+
+    # MoE: Define a router and 4 independent experts
+    num_experts = 4
+    state_dict[f'layer{i}.moe_router'] = matrix(num_experts, n_embd)
+    for e in range(num_experts):
+        state_dict[f'layer{i}.expert{e}_fc1'] = matrix(4 * n_embd, n_embd)
+        state_dict[f'layer{i}.expert{e}_fc2'] = matrix(n_embd, 4 * n_embd)
 params = [p for mat in state_dict.values() for row in mat for p in row] # flatten params into a single list[Value]
 print(f"num params: {len(params)}")
 
@@ -205,12 +210,30 @@ def gpt(token_id, pos_id, keys, values):
             x_attn.extend(head_out)
         x = linear(x_attn, state_dict[f'layer{li}.attn_wo'])
         x = [a + b for a, b in zip(x, x_residual)]
-        # 2) MLP block
+        # 2) MLP block (Mixture of Experts)
         x_residual = x
         x = rmsnorm(x)
-        x = linear(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [xi.gelu() for xi in x]
-        x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
+
+        # Router decides which expert to use
+        router_logits = linear(x, state_dict[f'layer{li}.moe_router'])
+        router_probs = softmax(router_logits)
+
+        # Find the Top-1 expert index by checking the underlying data
+        top_idx = 0
+        max_val = -float('inf')
+        for e_idx, prob in enumerate(router_probs):
+            if prob.data > max_val:
+                max_val = prob.data
+                top_idx = e_idx
+
+        # Send the token only through the chosen expert
+        x_expert = linear(x, state_dict[f'layer{li}.expert{top_idx}_fc1'])
+        x_expert = [xi.gelu() for xi in x_expert]
+        x_expert = linear(x_expert, state_dict[f'layer{li}.expert{top_idx}_fc2'])
+
+        # Multiply expert output by router probability to maintain the gradient chain
+        x = [xi * router_probs[top_idx] for xi in x_expert]
+
         x = [a + b for a, b in zip(x, x_residual)]
 
     logits = linear(x, state_dict['lm_head'])

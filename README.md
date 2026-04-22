@@ -2,7 +2,7 @@
 
 
 
-\### 1. Gaussian Error Linear Units (GELUs)
+### 1. Gaussian Error Linear Units (GELUs)
 
 \*\*Reference:\*\* \[https://arxiv.org/abs/1606.08415](https://arxiv.org/abs/1606.08415)
 
@@ -53,4 +53,18 @@ Instead of adding vectors, RoPE rotates the query $q$ and key $k$ representation
 $$\langle R_{\Theta, m} q, R_{\Theta, n} k \rangle = q^T R_{\Theta, m}^T R_{\Theta, n} k = q^T R_{\Theta, m-n} k$$
 
 This provides a mathematically elegant way to give the model relative positional awareness without needing complex relative distance tables. In our `microgpt.py` pure Python implementation, we entirely removed the absolute positional embeddings (`wpe`) and created an `apply_rope` function that rotates the $q$ and $k$ vectors head-by-head using $\cos(m\theta)$ and $\sin(m\theta)$ before the attention dot-product is calculated.
+
+### 4. Mixture of Experts (MoE)
+**Reference:** [https://huggingface.co/blog/moe#a-brief-history-of-moes](https://huggingface.co/blog/moe#a-brief-history-of-moes)
+
+**Underlying Idea:**
+Mixture of Experts (MoE) is an architecture pattern that dramatically increases a model's parameter count without proportionally increasing its computational cost. It replaces the standard, monolithic Feed-Forward Network (MLP) within a Transformer layer with a routing mechanism and a set of separate, smaller MLPs called "experts."
+
+For every token, a gating network (or router) calculates a probability distribution over the available experts. The model then selects only a subset of the experts (often just the Top-1 or Top-2) to process that specific token. The mathematical formulation for the output $y$ of an MoE layer given input $x$ and $N$ experts is:
+
+$$y = \sum_{i=1}^{N} G(x)_i E_i(x)$$
+
+Where $G(x)_i$ is the routing probability for the $i$-th expert, and $E_i(x)$ is the output of the $i$-th expert. In a sparse MoE, $G(x)_i$ is set to $0$ for all but the top $k$ experts.
+
+In our pure Python `microgpt.py` implementation, we created a router and 4 distinct experts. For each token, the router computes softmax probabilities, selects the single expert with the highest probability (Top-1 routing), passes the data through that expert alone, and weights the output by the routing probability so that gradients can still flow backward into the routing layer during training.
 
