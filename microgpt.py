@@ -48,6 +48,21 @@ class Value:
     def log(self): return Value(math.log(self.data), (self,), (1/self.data,))
     def exp(self): return Value(math.exp(self.data), (self,), (math.exp(self.data),))
     def relu(self): return Value(max(0, self.data), (self,), (float(self.data > 0),))
+
+    def gelu(self):
+        x = self.data
+        # Calculate the inner part of the approximation
+        z = math.sqrt(2.0 / math.pi) * (x + 0.044715 * x ** 3)
+        t = math.tanh(z)
+        out = 0.5 * x * (1.0 + t)
+
+        # Calculate the local gradient (derivative) for backpropagation
+        dz_dx = math.sqrt(2.0 / math.pi) * (1.0 + 3.0 * 0.044715 * x ** 2)
+        dt_dz = 1.0 - t ** 2
+        local_grad = 0.5 * (1.0 + t) + 0.5 * x * dt_dz * dz_dx
+
+        return Value(out, (self,), (local_grad,))
+
     def __neg__(self): return self * -1
     def __radd__(self, other): return self + other
     def __sub__(self, other): return self + (-other)
@@ -136,7 +151,7 @@ def gpt(token_id, pos_id, keys, values):
         x_residual = x
         x = rmsnorm(x)
         x = linear(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [xi.relu() for xi in x]
+        x = [xi.gelu() for xi in x]
         x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
         x = [a + b for a, b in zip(x, x_residual)]
 
