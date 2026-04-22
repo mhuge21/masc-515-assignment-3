@@ -94,10 +94,20 @@ n_head = 4      # number of attention heads
 head_dim = n_embd // n_head # derived dimension of each head
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
 state_dict = {'wte': matrix(vocab_size, n_embd), 'wpe': matrix(block_size, n_embd), 'lm_head': matrix(vocab_size, n_embd)}
+r = 2  # LoRA rank
 for i in range(n_layer):
     state_dict[f'layer{i}.attn_wq'] = matrix(n_embd, n_embd)
+    # LoRA matrices for Query
+    state_dict[f'layer{i}.attn_wq_a'] = matrix(r, n_embd)
+    state_dict[f'layer{i}.attn_wq_b'] = matrix(n_embd, r, std=0.0)  # B is initialized to 0
+
     state_dict[f'layer{i}.attn_wk'] = matrix(n_embd, n_embd)
+
     state_dict[f'layer{i}.attn_wv'] = matrix(n_embd, n_embd)
+    # LoRA matrices for Value
+    state_dict[f'layer{i}.attn_wv_a'] = matrix(r, n_embd)
+    state_dict[f'layer{i}.attn_wv_b'] = matrix(n_embd, r, std=0.0)  # B is initialized to 0
+
     state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
@@ -108,6 +118,20 @@ print(f"num params: {len(params)}")
 # Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU
 def linear(x, w):
     return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+
+
+def lora_linear(x, w, wa, wb):
+    """
+    Computes standard linear transformation plus the low-rank adaptation.
+    base_out = x @ w^T
+    lora_out = (x @ wa^T) @ wb^T
+    """
+    base_out = linear(x, w)  # Standard linear pass
+    lora_a_out = linear(x, wa)  # Compress to low rank 'r'
+    lora_out = linear(lora_a_out, wb)  # Expand back to original dimension
+
+    # Return the sum of the original weights and the LoRA adjustments
+    return [b + l for b, l in zip(base_out, lora_out)]
 
 def softmax(logits):
     max_val = max(val.data for val in logits)
@@ -130,9 +154,18 @@ def gpt(token_id, pos_id, keys, values):
         # 1) Multi-head Attention block
         x_residual = x
         x = rmsnorm(x)
-        q = linear(x, state_dict[f'layer{li}.attn_wq'])
+        # Apply LoRA to Query
+        q = lora_linear(x, state_dict[f'layer{li}.attn_wq'],
+                        state_dict[f'layer{li}.attn_wq_a'],
+                        state_dict[f'layer{li}.attn_wq_b'])
+
+        # Keep Key as standard linear
         k = linear(x, state_dict[f'layer{li}.attn_wk'])
-        v = linear(x, state_dict[f'layer{li}.attn_wv'])
+
+        # Apply LoRA to Value
+        v = lora_linear(x, state_dict[f'layer{li}.attn_wv'],
+                        state_dict[f'layer{li}.attn_wv_a'],
+                        state_dict[f'layer{li}.attn_wv_b'])
         keys[li].append(k)
         values[li].append(v)
         x_attn = []
